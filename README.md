@@ -1,6 +1,6 @@
 # 🤖 Advanced AI Chatbot with Llama 3.2
 
-An intelligent conversational AI chatbot powered by **Llama 3.2** running locally via Ollama, featuring advanced NLP capabilities, real-time sentiment analysis, and comprehensive analytics dashboard.
+An intelligent conversational AI chatbot powered by **Llama 3.2** running locally via Ollama, featuring advanced NLP capabilities, real-time sentiment analysis, and comprehensive analytics dashboard
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.53+-red.svg)
