@@ -10,9 +10,22 @@ __pycache__/
 venv/
 ENV/
 env/
+Lib/
+Scripts/
+etc/
+share/
+pyvenv.cfg
+
+# Node.js
+node_modules/
+package-lock.json
 
 # Streamlit
 .streamlit/
+
+# Environment variables
+.env
+.env.local
 
 # IDE
 .vscode/
@@ -26,6 +39,12 @@ Thumbs.db
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Cache
+.cache/
 
 # Distribution
 *.egg-info/
