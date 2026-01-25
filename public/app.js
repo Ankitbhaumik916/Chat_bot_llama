@@ -120,10 +120,8 @@ async function handleSendMessage() {
             entities
         });
         
-        // Auto-save conversation periodically (every 5 messages)
-        if (state.messages.length % 10 === 0) {
-            await saveCurrentConversation();
-        }
+        // Save after each exchange to ensure history is never lost
+        await saveCurrentConversation();
     }
 
     // Re-enable input
@@ -394,6 +392,21 @@ function updateAnalytics() {
 
 // Update charts
 function updateCharts() {
+    const chartTheme = {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        font: {
+            family: '"Space Grotesk", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif',
+            color: '#0F172A'
+        }
+    };
+
+    const baseAxis = {
+        gridcolor: '#E5E7EB',
+        zerolinecolor: '#E5E7EB',
+        tickfont: { size: 11 }
+    };
+
     // Sentiment Distribution Pie Chart
     const sentimentData = state.analytics.sentiments;
     if (Object.values(sentimentData).some(v => v > 0)) {
@@ -404,14 +417,15 @@ function updateCharts() {
                 type: 'pie',
                 hole: 0.4,
                 marker: {
-                    colors: ['#90EE90', '#FFB6C6', '#D3D3D3']
+                    colors: ['#10B981', '#EF4444', '#CBD5E1']
                 }
             }
         ], {
-            height: 200,
-            margin: { l: 0, r: 0, t: 30, b: 0 },
+            ...chartTheme,
+            height: 220,
+            margin: { l: 0, r: 0, t: 32, b: 0 },
             showlegend: true,
-            font: { size: 10 }
+            legend: { orientation: 'h', y: -0.2, font: { size: 11 } }
         }, { responsive: true });
     }
 
@@ -425,13 +439,14 @@ function updateCharts() {
                 x: intentEntries.map(e => e[1]),
                 type: 'bar',
                 orientation: 'h',
-                marker: { color: '#4CAF50' }
+                marker: { color: '#2563EB', opacity: 0.9, line: { color: '#1D4ED8', width: 1 } }
             }
         ], {
-            height: 200,
-            margin: { l: 80, r: 0, t: 0, b: 0 },
-            xaxis: { title: '' },
-            yaxis: { title: '' }
+            ...chartTheme,
+            height: 220,
+            margin: { l: 90, r: 12, t: 20, b: 20 },
+            xaxis: { ...baseAxis, title: '' },
+            yaxis: { ...baseAxis, title: '' }
         }, { responsive: true });
     }
 
@@ -451,20 +466,23 @@ function updateCharts() {
             fill: 'toself',
             type: 'scatterpolar',
             name: 'Current Performance',
-            fillcolor: 'rgba(76, 175, 80, 0.3)',
-            line: { color: '#4CAF50', width: 2 }
+            fillcolor: 'rgba(37, 99, 235, 0.2)',
+            line: { color: '#2563EB', width: 2 }
         }
     ], {
+        ...chartTheme,
         polar: {
             radialaxis: {
                 visible: true,
                 range: [0, 100],
-                tickfont: { size: 9 }
+                tickfont: { size: 10 },
+                gridcolor: '#E5E7EB',
+                linecolor: '#E5E7EB'
             }
         },
         showlegend: false,
         height: 300,
-        margin: { l: 40, r: 40, t: 40, b: 40 }
+        margin: { l: 30, r: 30, t: 30, b: 30 }
     }, { responsive: true });
 
     // Conversation Flow Analysis (if enough messages)
@@ -477,15 +495,16 @@ function updateCharts() {
                 y: Array.from({ length: messageNumbers.length }, (_, i) => i + 1),
                 type: 'scatter',
                 mode: 'lines+markers',
-                line: { color: '#2196F3', width: 2 },
-                marker: { size: 8 }
+                line: { color: '#2563EB', width: 2, shape: 'spline', smoothing: 1.2 },
+                marker: { size: 8, color: '#1D4ED8' }
             }
         ], {
+            ...chartTheme,
             title: 'Message Flow',
-            xaxis: { title: '' },
-            yaxis: { title: 'Count' },
-            height: 250,
-            margin: { l: 40, r: 20, t: 40, b: 20 }
+            xaxis: { ...baseAxis, title: '' },
+            yaxis: { ...baseAxis, title: 'Count' },
+            height: 240,
+            margin: { l: 36, r: 16, t: 40, b: 28 }
         }, { responsive: true });
 
         // Sentiment Trend
@@ -505,21 +524,23 @@ function updateCharts() {
                 y: recentSentiments,
                 type: 'scatter',
                 mode: 'lines+markers',
-                line: { color: '#FF9800', width: 2 },
-                marker: { size: 8 },
+                line: { color: '#F59E0B', width: 2, shape: 'spline', smoothing: 1.1 },
+                marker: { size: 7, color: '#F59E0B' },
                 fill: 'tozeroy',
-                fillcolor: 'rgba(255, 152, 0, 0.2)'
+                fillcolor: 'rgba(245, 158, 11, 0.15)'
             }
         ], {
+            ...chartTheme,
             title: 'Sentiment Trend',
-            xaxis: { title: 'Message #' },
+            xaxis: { ...baseAxis, title: 'Message #' },
             yaxis: {
+                ...baseAxis,
                 title: 'Sentiment',
                 tickvals: [-1, 0, 1],
                 ticktext: ['Negative', 'Neutral', 'Positive']
             },
-            height: 250,
-            margin: { l: 40, r: 20, t: 40, b: 20 }
+            height: 240,
+            margin: { l: 40, r: 16, t: 40, b: 30 }
         }, { responsive: true });
 
         document.getElementById('flowAnalysisContainer').style.display = 'block';
@@ -613,6 +634,34 @@ function init() {
             showNotification('💡 Click ☰ to view conversation history', 'info');
         }
     }, 2000);
+
+    // Persist any in-progress chat before the tab closes
+    window.addEventListener('beforeunload', () => {
+        try {
+            if (state.messages.length > 0) {
+                const raw = localStorage.getItem('chatbot_conversations') || '[]';
+                let conversations = JSON.parse(raw);
+                const existingIndex = conversations.findIndex(c => c.id === state.currentConversationId);
+                const conversation = {
+                    id: state.currentConversationId,
+                    title: conversations[existingIndex]?.title || 'Conversation',
+                    messages: state.messages,
+                    conversationHistory: state.conversationHistory,
+                    analytics: state.analytics,
+                    savedAt: new Date().toISOString(),
+                    messageCount: state.messages.length
+                };
+                if (existingIndex >= 0) {
+                    conversations[existingIndex] = conversation;
+                } else {
+                    conversations.unshift(conversation);
+                }
+                localStorage.setItem('chatbot_conversations', JSON.stringify(conversations.slice(0, 50)));
+            }
+        } catch (err) {
+            console.error('beforeunload save failed', err);
+        }
+    });
 }
 
 // ===== Conversation Management Functions =====
@@ -665,8 +714,15 @@ async function saveCurrentConversation() {
     if (state.messages.length === 0) return;
     
     try {
-        // Generate summary of conversation
-        const summary = await generateConversationSummary();
+        // Reuse existing title unless refreshing every 5 messages to reduce summary calls
+        let conversations = JSON.parse(localStorage.getItem('chatbot_conversations') || '[]');
+        const existingIndex = conversations.findIndex(c => c.id === state.currentConversationId);
+        const existing = existingIndex >= 0 ? conversations[existingIndex] : null;
+
+        let summary = existing?.title;
+        if (!summary || state.messages.length % 5 === 0) {
+            summary = await generateConversationSummary();
+        }
         
         const conversation = {
             id: state.currentConversationId,
@@ -677,12 +733,8 @@ async function saveCurrentConversation() {
             savedAt: new Date().toISOString(),
             messageCount: state.messages.length
         };
-        
-        // Save to localStorage
-        let conversations = JSON.parse(localStorage.getItem('chatbot_conversations') || '[]');
-        
+
         // Update or add conversation
-        const existingIndex = conversations.findIndex(c => c.id === state.currentConversationId);
         if (existingIndex >= 0) {
             conversations[existingIndex] = conversation;
         } else {
