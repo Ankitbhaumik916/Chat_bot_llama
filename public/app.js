@@ -5,6 +5,9 @@ const state = {
     currentConversationId: null,
     savedConversations: [],
     isLoading: false,
+    isRecording: false,
+    mediaRecorder: null,
+    audioChunks: [],
     analytics: {
         totalMessages: 0,
         userMessages: 0,
@@ -21,15 +24,29 @@ const state = {
         },
         conversationStart: new Date()
     },
-    temperature: 0.7
+    temperature: 0.7,
+    voiceEnabled: false,
+    voiceSpeed: 1.0,
+    realtimeVoiceEnabled: false,
+    realtimeVoiceConnected: false,
+    voiceSocket: null,
+    audioContext: null,
+    mediaStream: null,
+    audioProcessor: null
 };
 
 // DOM Elements
 const chatHistory = document.getElementById('chatHistory');
 const userInput = document.getElementById('userInput');
 const sendBtn = document.getElementById('sendBtn');
+const voiceInputBtn = document.getElementById('voiceInputBtn');
 const temperatureSlider = document.getElementById('temperatureSlider');
 const tempValue = document.getElementById('tempValue');
+const voiceToggle = document.getElementById('voiceToggle');
+const voiceSpeedSlider = document.getElementById('voiceSpeedSlider');
+const voiceSpeedValue = document.getElementById('voiceSpeedValue');
+const realtimeVoiceToggle = document.getElementById('realtimeVoiceToggle');
+const realtimeStatus = document.getElementById('realtimeStatus');
 const historySidebar = document.getElementById('historySidebar');
 const historyList = document.getElementById('historyList');
 const newChatBtn = document.getElementById('newChatBtn');
@@ -50,9 +67,34 @@ userInput.addEventListener('keypress', (e) => {
     }
 });
 
+// Voice input button
+voiceInputBtn.addEventListener('click', toggleVoiceRecording);
+
+// Voice settings
 temperatureSlider.addEventListener('input', (e) => {
     state.temperature = parseFloat(e.target.value);
     tempValue.textContent = state.temperature.toFixed(1);
+});
+
+voiceToggle.addEventListener('change', (e) => {
+    state.voiceEnabled = e.target.checked;
+    localStorage.setItem('voiceEnabled', state.voiceEnabled);
+});
+
+voiceSpeedSlider.addEventListener('input', (e) => {
+    state.voiceSpeed = parseFloat(e.target.value);
+    voiceSpeedValue.textContent = state.voiceSpeed.toFixed(1) + 'x';
+    localStorage.setItem('voiceSpeed', state.voiceSpeed);
+});
+
+realtimeVoiceToggle.addEventListener('change', async (e) => {
+    state.realtimeVoiceEnabled = e.target.checked;
+    localStorage.setItem('realtimeVoiceEnabled', state.realtimeVoiceEnabled);
+    if (state.realtimeVoiceEnabled) {
+        await connectRealtimeVoice();
+    } else {
+        disconnectRealtimeVoice();
+    }
 });
 
 clearChatBtn.addEventListener('click', clearChat);
@@ -135,6 +177,360 @@ async function handleSendMessage() {
     autoScroll();
 }
 
+// ================== VOICE FEATURES ==================
+
+function updateRealtimeStatus(text, statusClass = '') {
+    if (!realtimeStatus) return;
+    realtimeStatus.textContent = text;
+    realtimeStatus.classList.remove('connected', 'error');
+    if (statusClass) {
+        realtimeStatus.classList.add(statusClass);
+    }
+}
+
+async function connectRealtimeVoice() {
+    if (state.voiceSocket && state.voiceSocket.readyState === WebSocket.OPEN) {
+        return;
+    }
+
+    updateRealtimeStatus('Local voice: connecting...');
+
+    try {
+        const socket = new WebSocket('ws://localhost:8765');
+        socket.binaryType = 'arraybuffer';
+
+        socket.onopen = () => {
+            state.realtimeVoiceConnected = true;
+            updateRealtimeStatus('Local voice: connected', 'connected');
+        };
+
+        socket.onclose = () => {
+            state.realtimeVoiceConnected = false;
+            updateRealtimeStatus('Local voice: disconnected');
+        };
+
+        socket.onerror = () => {
+            updateRealtimeStatus('Local voice: error', 'error');
+            showNotification('❌ Realtime voice connection failed', 'error');
+        };
+
+        socket.onmessage = handleRealtimeMessage;
+        state.voiceSocket = socket;
+    } catch (error) {
+        updateRealtimeStatus('Local voice: error', 'error');
+        showNotification('❌ ' + error.message, 'error');
+    }
+}
+
+function disconnectRealtimeVoice() {
+    if (state.isRecording) {
+        stopRealtimeRecording();
+    }
+
+    if (state.voiceSocket) {
+        state.voiceSocket.close();
+        state.voiceSocket = null;
+    }
+
+    state.realtimeVoiceConnected = false;
+    updateRealtimeStatus('Local voice: disconnected');
+}
+
+function handleRealtimeMessage(event) {
+    if (typeof event.data === 'string') {
+        let payload;
+        try {
+            payload = JSON.parse(event.data);
+        } catch (err) {
+            return;
+        }
+
+        if (payload.type === 'partial') {
+            userInput.placeholder = payload.text || 'Listening...';
+        }
+
+        if (payload.type === 'final') {
+            const finalText = (payload.text || '').trim();
+            userInput.placeholder = 'Type your message here...';
+            if (finalText) {
+                userInput.value = finalText;
+                showNotification('✅ Voice recognized: "' + finalText + '"', 'success');
+                setTimeout(() => handleSendMessage(), 300);
+            } else {
+                showNotification('❌ Could not recognize speech', 'error');
+            }
+        }
+
+        if (payload.type === 'error') {
+            showNotification('❌ ' + payload.message, 'error');
+        }
+
+        return;
+    }
+
+    if (event.data instanceof ArrayBuffer) {
+        playRealtimeAudio(event.data);
+    }
+}
+
+async function startRealtimeRecording() {
+    if (!state.voiceSocket || state.voiceSocket.readyState !== WebSocket.OPEN) {
+        showNotification('❌ Realtime voice service is not connected', 'error');
+        return;
+    }
+
+    if (state.isRecording) return;
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(stream);
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        const silence = audioContext.createGain();
+        silence.gain.value = 0;
+
+        processor.onaudioprocess = (event) => {
+            if (!state.voiceSocket || state.voiceSocket.readyState !== WebSocket.OPEN) return;
+            const input = event.inputBuffer.getChannelData(0);
+            const buffer = new Int16Array(input.length);
+
+            for (let i = 0; i < input.length; i++) {
+                let sample = Math.max(-1, Math.min(1, input[i]));
+                buffer[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+            }
+
+            state.voiceSocket.send(buffer.buffer);
+        };
+
+        source.connect(processor);
+        processor.connect(silence);
+        silence.connect(audioContext.destination);
+
+        state.audioContext = audioContext;
+        state.mediaStream = stream;
+        state.audioProcessor = processor;
+        state.isRecording = true;
+
+        state.voiceSocket.send(JSON.stringify({ type: 'start', sampleRate: 16000 }));
+
+        voiceInputBtn.style.background = '#D32F2F';
+        voiceInputBtn.style.color = 'white';
+        voiceInputBtn.style.animation = 'pulse 1s infinite';
+        voiceInputBtn.textContent = '⏹️';
+        userInput.disabled = true;
+        sendBtn.disabled = true;
+        showNotification('🎙️ Realtime listening... Click again to stop', 'info');
+    } catch (error) {
+        showNotification('❌ ' + error.message, 'error');
+    }
+}
+
+function stopRealtimeRecording() {
+    if (!state.isRecording) return;
+
+    if (state.voiceSocket && state.voiceSocket.readyState === WebSocket.OPEN) {
+        state.voiceSocket.send(JSON.stringify({ type: 'end' }));
+    }
+
+    if (state.audioProcessor) {
+        state.audioProcessor.disconnect();
+        state.audioProcessor.onaudioprocess = null;
+        state.audioProcessor = null;
+    }
+
+    if (state.mediaStream) {
+        state.mediaStream.getTracks().forEach(track => track.stop());
+        state.mediaStream = null;
+    }
+
+    if (state.audioContext) {
+        state.audioContext.close();
+        state.audioContext = null;
+    }
+
+    state.isRecording = false;
+    voiceInputBtn.style.background = '';
+    voiceInputBtn.style.color = '';
+    voiceInputBtn.style.animation = 'none';
+    voiceInputBtn.textContent = '🎤';
+    userInput.disabled = false;
+    sendBtn.disabled = false;
+}
+
+// Toggle voice recording
+async function toggleVoiceRecording() {
+    if (state.realtimeVoiceEnabled) {
+        if (!state.realtimeVoiceConnected) {
+            showNotification('🔌 Connecting local voice service...', 'info');
+            await connectRealtimeVoice();
+            return;
+        }
+
+        if (state.isRecording) {
+            stopRealtimeRecording();
+        } else {
+            startRealtimeRecording();
+        }
+        return;
+    }
+
+    if (state.isRecording) {
+        stopVoiceRecording();
+    } else {
+        startVoiceRecording();
+    }
+}
+
+// Start voice recording with Web Speech API
+async function startVoiceRecording() {
+    try {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            showNotification('❌ Speech Recognition not supported in your browser', 'error');
+            return;
+        }
+        
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+        
+        state.isRecording = true;
+        state.mediaRecorder = recognition; // Store reference
+        
+        // Update UI
+        voiceInputBtn.style.background = '#D32F2F';
+        voiceInputBtn.style.color = 'white';
+        voiceInputBtn.style.animation = 'pulse 1s infinite';
+        voiceInputBtn.textContent = '⏹️';
+        userInput.disabled = true;
+        sendBtn.disabled = true;
+        showNotification('🎤 Listening... Click again to stop', 'info');
+        
+        let transcript = '';
+        
+        recognition.onstart = () => {
+            console.log('Speech recognition started');
+        };
+        
+        recognition.onresult = (event) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcriptSegment = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    transcript += transcriptSegment + ' ';
+                } else {
+                    interim += transcriptSegment;
+                }
+            }
+            // Show interim results
+            if (interim) {
+                userInput.placeholder = interim;
+            }
+        };
+        
+        recognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            showNotification('❌ ' + (event.error || 'Error recognizing speech'), 'error');
+            state.mediaRecorder.stop();
+        };
+        
+        recognition.onend = () => {
+            console.log('Speech recognition ended');
+            state.isRecording = false;
+            if (transcript.trim()) {
+                userInput.value = transcript.trim();
+                userInput.placeholder = 'Type your message here...';
+                showNotification('✅ Voice recognized: "' + transcript.trim() + '"', 'success');
+                setTimeout(() => handleSendMessage(), 500);
+            } else {
+                showNotification('❌ Could not recognize speech', 'error');
+            }
+            // Reset UI
+            voiceInputBtn.style.background = '';
+            voiceInputBtn.style.color = '';
+            voiceInputBtn.style.animation = 'none';
+            voiceInputBtn.textContent = '🎤';
+            userInput.disabled = false;
+            sendBtn.disabled = false;
+        };
+        
+        recognition.start();
+    } catch (error) {
+        console.error('Voice recording error:', error);
+        showNotification('❌ ' + error.message, 'error');
+    }
+}
+
+// Stop voice recording
+function stopVoiceRecording() {
+    if (state.mediaRecorder && state.isRecording) {
+        try {
+            if (state.mediaRecorder.stop) {
+                state.mediaRecorder.stop();
+            }
+        } catch (err) {
+            console.error('Error stopping recognition:', err);
+        }
+        state.isRecording = false;
+    }
+}
+
+// Process voice recording (no longer needed, handled by onend event)
+async function processVoiceRecording() {
+    // This is now handled directly in the recognition.onend event
+}
+
+// Text-to-Speech using Web Speech API
+function speakMessage(text) {
+    if (state.realtimeVoiceEnabled && state.realtimeVoiceConnected) {
+        requestRealtimeTts(text);
+        return;
+    }
+
+    try {
+        // Cancel any ongoing speech
+        window.speechSynthesis.cancel();
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = state.voiceSpeed;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+
+        window.speechSynthesis.speak(utterance);
+    } catch (error) {
+        console.error('Text-to-speech error:', error);
+    }
+}
+
+function requestRealtimeTts(text) {
+    if (!state.voiceSocket || state.voiceSocket.readyState !== WebSocket.OPEN) {
+        showNotification('❌ Realtime voice service is not connected', 'error');
+        return;
+    }
+
+    state.voiceSocket.send(JSON.stringify({ type: 'tts', text }));
+}
+
+function playRealtimeAudio(buffer) {
+    try {
+        const blob = new Blob([buffer], { type: 'audio/wav' });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => URL.revokeObjectURL(url);
+        audio.play().catch(() => URL.revokeObjectURL(url));
+    } catch (error) {
+        console.error('Realtime audio playback error:', error);
+    }
+}
+
+// ================== END VOICE FEATURES ==================
+
+    // Update UI
+    updateAnalytics();
+    updateCharts();
+    autoScroll();
+
 // Analyze message (sentiment, intent, entities)
 async function analyzeMessage(text) {
     try {
@@ -214,7 +610,7 @@ function displayMessage(role, content, sentiment = null, entities = []) {
         }
     }
 
-    // Add feedback buttons for bot messages
+    // Add feedback buttons and voice replay for bot messages
     if (role === 'assistant') {
         const feedbackDiv = document.createElement('div');
         feedbackDiv.style.display = 'flex';
@@ -222,6 +618,26 @@ function displayMessage(role, content, sentiment = null, entities = []) {
         feedbackDiv.style.marginTop = '8px';
         feedbackDiv.style.paddingTop = '8px';
         feedbackDiv.style.borderTop = '1px solid rgba(0,0,0,0.1)';
+        feedbackDiv.style.flexWrap = 'wrap';
+
+        // Voice replay button
+        const voiceReplay = document.createElement('button');
+        voiceReplay.textContent = '🔊';
+        voiceReplay.title = 'Play message as voice';
+        voiceReplay.style.padding = '6px 12px';
+        voiceReplay.style.background = 'transparent';
+        voiceReplay.style.border = '1px solid #1976D2';
+        voiceReplay.style.borderRadius = '4px';
+        voiceReplay.style.color = '#1976D2';
+        voiceReplay.style.cursor = 'pointer';
+        voiceReplay.style.fontWeight = '500';
+        voiceReplay.style.fontSize = '13px';
+        voiceReplay.style.transition = 'all 0.2s ease';
+        voiceReplay.onmouseover = () => { voiceReplay.style.background = 'rgba(25,118,210,0.1)'; };
+        voiceReplay.onmouseout = () => { voiceReplay.style.background = 'transparent'; };
+        voiceReplay.onclick = () => {
+            speakMessage(content);
+        };
 
         const thumbsUp = document.createElement('button');
         thumbsUp.textContent = '👍';
@@ -265,9 +681,15 @@ function displayMessage(role, content, sentiment = null, entities = []) {
             thumbsDown.disabled = true;
         };
 
+        feedbackDiv.appendChild(voiceReplay);
         feedbackDiv.appendChild(thumbsUp);
         feedbackDiv.appendChild(thumbsDown);
         messageDiv.appendChild(feedbackDiv);
+        
+        // Auto-play voice if enabled
+        if (state.voiceEnabled) {
+            setTimeout(() => speakMessage(content), 500);
+        }
     }
 
     chatHistory.appendChild(messageDiv);
@@ -623,6 +1045,34 @@ function autoScroll() {
 // Initialize
 function init() {
     console.log('🤖 Chatbot Frontend initialized');
+    
+    // Load voice settings from localStorage
+    const savedVoiceEnabled = localStorage.getItem('voiceEnabled');
+    const savedVoiceSpeed = localStorage.getItem('voiceSpeed');
+    const savedRealtimeVoiceEnabled = localStorage.getItem('realtimeVoiceEnabled');
+    
+    if (savedVoiceEnabled !== null) {
+        state.voiceEnabled = savedVoiceEnabled === 'true';
+        voiceToggle.checked = state.voiceEnabled;
+    }
+    
+    if (savedVoiceSpeed !== null) {
+        state.voiceSpeed = parseFloat(savedVoiceSpeed);
+        voiceSpeedSlider.value = state.voiceSpeed;
+        voiceSpeedValue.textContent = state.voiceSpeed.toFixed(1) + 'x';
+    }
+
+    if (savedRealtimeVoiceEnabled !== null) {
+        state.realtimeVoiceEnabled = savedRealtimeVoiceEnabled === 'true';
+        realtimeVoiceToggle.checked = state.realtimeVoiceEnabled;
+    }
+
+    if (state.realtimeVoiceEnabled) {
+        connectRealtimeVoice();
+    } else {
+        updateRealtimeStatus('Local voice: disconnected');
+    }
+    
     loadSavedConversations();
     startNewConversation();
     updateAnalytics();

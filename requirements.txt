@@ -2,3 +2,5 @@ streamlit>=1.53.0
 requests>=2.31.0
 plotly>=5.18.0
 pandas>=2.0.0
+vosk>=0.3.45
+websockets>=12.0
