@@ -2,8 +2,8 @@
   "host": "0.0.0.0",
   "port": 8765,
   "sampleRate": 16000,
-  "voskModelPath": "C:/path/to/vosk-model-small-en-us-0.15",
-  "piperPath": "C:/path/to/piper.exe",
-  "piperModelPath": "C:/path/to/en_US-amy-medium.onnx",
-  "piperConfigPath": "C:/path/to/en_US-amy-medium.onnx.json"
+  "voskModelPath": "C:/vosk-models/vosk-model-small-en-us-0.15",
+  "piperPath": "C:/piper/piper.exe",
+  "piperModelPath": "C:/piper/en_US-amy-medium.onnx",
+  "piperConfigPath": "C:/piper/en_US-amy-medium.onnx.json"
 }
